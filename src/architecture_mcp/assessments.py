@@ -44,6 +44,24 @@ def _confidence(conf: float) -> float:
     return c
 
 
+def _require_evidence_architecture(db: Database, architecture_id: int, fact_id: int) -> dict | None:
+    """ADR-001 §4: a fact must belong to the same architecture as the
+    assessment it evidences. Returns an error envelope on mismatch, else None.
+    """
+    row = db.connection.execute(
+        "SELECT architecture_id FROM facts WHERE id = ?", (fact_id,)
+    ).fetchone()
+    if row is None:
+        return M.not_found("fact", id=fact_id)
+    if row["architecture_id"] != architecture_id:
+        return M.bad_request(
+            f"fact {fact_id} belongs to architecture {row['architecture_id']}, "
+            f"but assessment belongs to architecture {architecture_id}",
+            fact_id=fact_id,
+        )
+    return None
+
+
 def _page(limit: int | None, offset: int | None) -> tuple[int, int]:
     lim = min(max(int(limit or M.DEFAULT_LIMIT), 1), M.MAX_LIMIT)
     off = max(int(offset or 0), 0)
@@ -134,8 +152,11 @@ def _precheck(
     if not db.connection.execute("SELECT 1 FROM architectures WHERE id = ?", (architecture_id,)).fetchone():
         return M.not_found("architecture", id=architecture_id)
     for item in facts or []:
-        if not db.connection.execute("SELECT 1 FROM facts WHERE id = ?", (item.get("fact_id",),)).fetchone():
-            return M.not_found("fact", id=item.get("fact_id"))
+        # ADR-001 §4: each evidence fact must exist AND belong to the same
+        # architecture as the assessment.
+        err = _require_evidence_architecture(db, architecture_id, item.get("fact_id"))
+        if err is not None:
+            return err
     return None
 
 
@@ -182,11 +203,26 @@ def attach_fact(
     fact_id: int,
     relation_type: str,
 ) -> dict:
-    """Link a fact to an assessment with an explicit relation (upsert)."""
+    """Link a fact to an assessment with an explicit relation (upsert).
+
+    ADR-001 §4: the fact must belong to the same architecture as the
+    assessment; the operation is rejected (no partial mutation) otherwise.
+    """
     try:
         _one_of(relation_type, {k.value for k in M.RelationType}, "relation_type")
     except ValueError as exc:
         return M.bad_request(str(exc))
+
+    asmt = db.connection.execute(
+        "SELECT architecture_id FROM assessments WHERE id = ?", (assessment_id,)
+    ).fetchone()
+    if asmt is None:
+        return M.not_found("assessment", id=assessment_id)
+
+    err = _require_evidence_architecture(db, asmt["architecture_id"], fact_id)
+    if err is not None:
+        return err
+
     try:
         with db.transaction() as conn:
             conn.execute(

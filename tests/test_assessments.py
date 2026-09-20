@@ -115,6 +115,59 @@ def test_bad_inputs(db, seed) -> None:
     )["code"] == "NOT_FOUND"
 
 
+def test_create_rejects_foreign_architecture_fact(db, seed) -> None:
+    """ADR-001 §4/§9.2: assessment_create with a fact belonging to another
+    architecture must be rejected as BAD_REQUEST and nothing partially written.
+    """
+    arch2 = S.create_architecture(db, name="Чужая арк", version="1.0")["id"]
+    foreign = F.create_fact(
+        db, architecture_id=arch2, source_id=seed["src"], fact_text="чужой факт"
+    )["id"]
+    # No facts existed in the first place; create is expected to fail cleanly.
+    before_asmt = db.connection.execute("SELECT count(*) AS c FROM assessments").fetchone()["c"]
+    r = A.create_assessment(
+        db, requirement_id=seed["rid"], architecture_id=seed["arch"],
+        result="COMPLIANT", rationale="r",
+        facts=[{"fact_id": foreign, "relation_type": "SUPPORTS"}],
+    )
+    assert r["ok"] is False
+    assert r["code"] == "BAD_REQUEST", r
+    assert "architecture" in r["error"]
+    after_asmt = db.connection.execute("SELECT count(*) AS c FROM assessments").fetchone()["c"]
+    assert before_asmt == after_asmt          # nothing written
+    assert db.connection.execute("SELECT count(*) AS c FROM assessment_facts").fetchone()["c"] == 0
+    # Second fact from the same architecture is still accepted.
+    ok = A.create_assessment(
+        db, requirement_id=seed["rid"], architecture_id=seed["arch"],
+        result="COMPLIANT", rationale="r",
+        facts=[{"fact_id": seed["f1"], "relation_type": "SUPPORTS"}],
+    )
+    assert ok["ok"] is True, ok
+
+
+def test_attach_fact_rejects_foreign_architecture(db, seed) -> None:
+    """ADR-001 §4/§9.3: attach_fact with a fact from another architecture
+    must refuse without altering existing evidence."""
+    # First create an assessment with the architecture's own evidence.
+    aid = A.create_assessment(
+        db, requirement_id=seed["rid"], architecture_id=seed["arch"],
+        result="PARTIAL", rationale="partly",
+        facts=[{"fact_id": seed["f1"], "relation_type": "SUPPORTS"}],
+    )["id"]
+    # Now attach a foreign fact — must fail.
+    arch2 = S.create_architecture(db, name="Чужая арк 2", version="1.0")["id"]
+    foreign = F.create_fact(
+        db, architecture_id=arch2, source_id=seed["src"], fact_text="чужой факт 2"
+    )["id"]
+    r = A.attach_fact(db, assessment_id=aid, fact_id=foreign, relation_type="SUPPORTS")
+    assert r["ok"] is False
+    assert r["code"] == "BAD_REQUEST", r
+    # Original evidence untouched.
+    ev = A.assessment_evidence(db, aid)["items"]
+    assert len(ev) == 1 and ev[0]["fact_id"] == seed["f1"]
+    assert ev[0]["relation_type"] == "SUPPORTS"
+
+
 def test_attach_detach_fact(db, seed) -> None:
     aid = A.create_assessment(
         db, requirement_id=seed["rid"], architecture_id=seed["arch"],
