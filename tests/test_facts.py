@@ -84,6 +84,36 @@ def test_list_filtered_by_architecture(db, arch, src) -> None:
     assert all(i["architecture_id"] == arch for i in page["items"])
 
 
+def test_search_isolated_by_architecture(db, src) -> None:
+    """ADR-001 §3: search over architecture A must not leak facts of B,
+    even when the SAME text substring matches both. Regression guard
+    against the classic `A OR B AND X` mis-binding."""
+    r_a = S.create_architecture(db, name="Architecture A", version="1")
+    r_b = S.create_architecture(db, name="Architecture B", version="1")
+    a_id, b_id = r_a["id"], r_b["id"]
+
+    F.create_fact(db, architecture_id=a_id, source_id=src,
+                  fact_text="Database is PostgreSQL on AWS")
+    # Identical text, different architecture.
+    F.create_fact(db, architecture_id=b_id, source_id=src,
+                  fact_text="Database is PostgreSQL on Azure")
+
+    res = F.search_facts(db, query="PostgreSQL", architecture_id=a_id)
+    assert res["ok"] is True
+    items = res["items"]
+    assert len(items) == 1, items
+    assert items[0]["architecture_id"] == a_id
+
+    # Control: same query with no filter returns both.
+    no_arch = F.search_facts(db, query="PostgreSQL")
+    assert len(no_arch["items"]) == 2
+
+    # And architecture B filter returns only B.
+    res_b = F.search_facts(db, query="PostgreSQL", architecture_id=b_id)
+    assert len(res_b["items"]) == 1
+    assert res_b["items"][0]["architecture_id"] == b_id
+
+
 def test_search_and_escaping(db, arch, src) -> None:
     F.create_fact(db, architecture_id=arch, source_id=src, fact_text="Uses 80% CPU")
     F.create_fact(db, architecture_id=arch, source_id=src, fact_text="Uses little CPU")

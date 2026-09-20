@@ -145,10 +145,13 @@ def search_facts(
     """Case-insensitive substring search over fact text."""
     lim, off = _page(limit, offset)
     needle = f"%{_escape_like(query.strip())}%"
+    # IMPORTANT: the two text LIKE terms are grouped in parentheses so that
+    # the architecture filter applies to BOTH — without this, `A OR B AND X`
+    # binds as `A OR (B AND X)` in SQL and leaks facts of other architectures.
     sql = (
         "SELECT * FROM facts "
-        "WHERE ilower(fact_text) LIKE ilower(?) ESCAPE '\\' "
-        "   OR ilower(coalesce(normalized_text, '')) LIKE ilower(?) ESCAPE '\\'"
+        "WHERE (ilower(fact_text) LIKE ilower(?) ESCAPE '\\' "
+        "   OR ilower(coalesce(normalized_text, '')) LIKE ilower(?) ESCAPE '\\')"
     )
     args: list[object] = [needle, needle]
     if architecture_id is not None:
