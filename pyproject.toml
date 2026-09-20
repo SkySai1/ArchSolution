@@ -39,7 +39,10 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
-ignore = ["E501"]
+# UP042: `class X(str, enum.Enum)` is the canonical way to expose a string-backed
+# enum that serializes cleanly to JSON in MCP tool responses (StrEnum also works,
+# but mixing both across files would be worse). Keep the existing style.
+ignore = ["E501", "UP042"]
 
 [tool.uv]
 package = true
