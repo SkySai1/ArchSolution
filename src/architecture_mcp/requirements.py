@@ -151,7 +151,18 @@ def update_requirement(
     source_quote: str | None = None,
     status: str | None = None,
 ) -> dict:
-    """Partial update of a requirement; only provided fields are changed."""
+    """Partial update of a requirement; only provided fields are changed.
+
+    ADR-001 §7: ``source_quote`` is the original evidence and is immutable
+    through the generic update path. Passing it is rejected with a
+    BAD_REQUEST; use ``correct_requirement_quote`` to fix a wrongly-recorded
+    quote.
+    """
+    if source_quote is not None:
+        return M.bad_request(
+            "source_quote is immutable via requirement_update; "
+            "use correct_requirement_quote to change it",
+        )
     fields: dict[str, object] = {}
     if requirement_text is not None:
         try:
@@ -163,8 +174,6 @@ def update_requirement(
         fields["normalized_text"] = normalized_text
     if source_locator is not None:
         fields["source_locator"] = source_locator
-    if source_quote is not None:
-        fields["source_quote"] = source_quote
     if status is not None:
         try:
             _one_of(status, {k.value for k in M.RequirementStatus}, "status")
@@ -190,6 +199,33 @@ def update_requirement(
     except sqlite3.IntegrityError as exc:
         return M.conflict(str(exc))
 
+    row = db.connection.execute(
+        "SELECT * FROM requirements WHERE id = ?", (requirement_id,)
+    ).fetchone()
+    return M.ok(**dict(row))
+
+
+def correct_requirement_quote(
+    db: Database,
+    requirement_id: int,
+    *,
+    source_quote: str,
+) -> dict:
+    """ADR-001 §7: fix an original quote only through this dedicated
+    operation. ``source_quote`` is the evidence of provenance and must not
+    be changed by the generic update path.
+    """
+    if not source_quote or not source_quote.strip():
+        return M.bad_request("source_quote must be a non-empty string")
+    if not db.connection.execute(
+        "SELECT 1 FROM requirements WHERE id = ?", (requirement_id,)
+    ).fetchone():
+        return M.not_found("requirement", id=requirement_id)
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE requirements SET source_quote = ? WHERE id = ?",
+            (source_quote, requirement_id),
+        )
     row = db.connection.execute(
         "SELECT * FROM requirements WHERE id = ?", (requirement_id,)
     ).fetchone()
@@ -268,6 +304,20 @@ def register(mcp, db: Database) -> None:
             db, requirement_id, requirement_text=requirement_text,
             normalized_text=normalized_text, source_locator=source_locator,
             source_quote=source_quote, status=status,
+        )
+
+    @mcp.tool()
+    def requirement_correct_quote(
+        requirement_id: int,
+        source_quote: str,
+    ) -> dict:
+        """Correct the original source_quote (dedicated ADR-001 §7 operation).
+
+        Requirement_update refuses to change source_quote; use this tool
+        to fix a wrongly-recorded quote.
+        """
+        return correct_requirement_quote(
+            db, requirement_id, source_quote=source_quote
         )
 
     @mcp.tool()

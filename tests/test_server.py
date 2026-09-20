@@ -14,9 +14,11 @@ ALL_EXPECTED_TOOLS = {
     # requirements.py
     "requirement_create", "requirement_get", "requirement_list",
     "requirement_search", "requirement_update", "requirement_categories",
+    "requirement_correct_quote",
     # facts.py
     "fact_create", "fact_get", "fact_list",
     "fact_search", "fact_update", "fact_categories",
+    "fact_correct_quote",
     # categories.py
     "category_create", "category_get", "category_list",
     "category_search", "category_assign", "category_unassign",

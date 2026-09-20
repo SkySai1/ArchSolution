@@ -17,6 +17,7 @@ _TOOL_NAMES = {
     "requirement_search",
     "requirement_update",
     "requirement_categories",
+    "requirement_correct_quote",
 }
 
 
@@ -96,6 +97,33 @@ def test_update_partial_fields(db, src) -> None:
     assert r["ok"] is True
     assert r["status"] == "SUPERSEDED"
     assert r["requirement_text"] == "first"  # not touched
+
+
+def test_update_rejects_source_quote(db, src) -> None:
+    """ADR-001 §7/§9.7: the generic update must refuse to change source_quote."""
+    rid = R.create_requirement(
+        db, source_id=src, requirement_text="t", source_quote="orig quote"
+    )["id"]
+    r = R.update_requirement(db, rid, requirement_text="t2", source_quote="hacked")
+    assert r["ok"] is False
+    assert r["code"] == "BAD_REQUEST", r
+    # And the quote (and text) are untouched on rejection.
+    got = R.get_requirement(db, rid)
+    assert got["source_quote"] == "orig quote"
+    assert got["requirement_text"] == "t"
+
+
+def test_correct_requirement_quote_dedicated(db, src) -> None:
+    """ADR-001 §7.3: a wrongly-recorded quote is fixed via the dedicated tool."""
+    rid = R.create_requirement(
+        db, source_id=src, requirement_text="t", source_quote="wrong"
+    )["id"]
+    r = R.correct_requirement_quote(db, rid, source_quote="the true quote")
+    assert r["ok"] is True, r
+    assert r["source_quote"] == "the true quote"
+    # Guards.
+    assert R.correct_requirement_quote(db, rid, source_quote="")["code"] == "BAD_REQUEST"
+    assert R.correct_requirement_quote(db, 999, source_quote="x")["code"] == "NOT_FOUND"
 
 
 def test_update_rejects_empty_text_and_no_fields(db, src) -> None:

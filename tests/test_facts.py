@@ -16,6 +16,7 @@ _TOOL_NAMES = {
     "fact_search",
     "fact_update",
     "fact_categories",
+    "fact_correct_quote",
 }
 
 
@@ -124,6 +125,30 @@ def test_search_and_escaping(db, arch, src) -> None:
 
     res2 = F.search_facts(db, query="USES", architecture_id=arch)
     assert len(res2["items"]) == 2
+
+
+def test_facts_update_rejects_source_quote(db, arch, src) -> None:
+    """ADR-001 §7/§9.7: fact_update must refuse to change source_quote."""
+    fid = F.create_fact(
+        db, architecture_id=arch, source_id=src, fact_text="t", source_quote="orig"
+    )["id"]
+    r = F.update_fact(db, fid, fact_text="t2", source_quote="hacked")
+    assert r["ok"] is False
+    assert r["code"] == "BAD_REQUEST", r
+    got = F.get_fact(db, fid)
+    assert got["source_quote"] == "orig"
+    assert got["fact_text"] == "t"
+
+
+def test_correct_fact_quote_dedicated(db, arch, src) -> None:
+    fid = F.create_fact(
+        db, architecture_id=arch, source_id=src, fact_text="t", source_quote="wrong"
+    )["id"]
+    r = F.correct_fact_quote(db, fid, source_quote="the true quote")
+    assert r["ok"] is True, r
+    assert r["source_quote"] == "the true quote"
+    assert F.correct_fact_quote(db, fid, source_quote="")["code"] == "BAD_REQUEST"
+    assert F.correct_fact_quote(db, 999, source_quote="x")["code"] == "NOT_FOUND"
 
 
 def test_update_partial_fields(db, arch, src) -> None:

@@ -173,7 +173,17 @@ def update_fact(
     source_quote: str | None = None,
     status: str | None = None,
 ) -> dict:
-    """Partial update of a fact; only provided fields are changed."""
+    """Partial update of a fact; only provided fields are changed.
+
+    ADR-001 §7: ``source_quote`` is the original evidence and is immutable
+    via the generic update path — passing it is rejected with BAD_REQUEST.
+    Use ``correct_fact_quote`` to fix a wrongly-recorded quote.
+    """
+    if source_quote is not None:
+        return M.bad_request(
+            "source_quote is immutable via fact_update; "
+            "use fact_correct_quote to change it",
+        )
     fields: dict[str, object] = {}
     if fact_text is not None:
         try:
@@ -185,8 +195,6 @@ def update_fact(
         fields["normalized_text"] = normalized_text
     if source_locator is not None:
         fields["source_locator"] = source_locator
-    if source_quote is not None:
-        fields["source_quote"] = source_quote
     if status is not None:
         try:
             _one_of(status, {k.value for k in M.FactStatus}, "status")
@@ -207,6 +215,27 @@ def update_fact(
     except sqlite3.IntegrityError as exc:
         return M.conflict(str(exc))
 
+    row = db.connection.execute("SELECT * FROM facts WHERE id = ?", (fact_id,)).fetchone()
+    return M.ok(**dict(row))
+
+
+def correct_fact_quote(db: Database, fact_id: int, *, source_quote: str) -> dict:
+    """ADR-001 §7: fix an original quote only via this dedicated operation.
+
+    The generic ``fact_update`` refuses to change ``source_quote``; this is
+    the sole path to correct a wrongly-recorded provenance quote.
+    """
+    if not source_quote or not source_quote.strip():
+        return M.bad_request("source_quote must be a non-empty string")
+    if not db.connection.execute(
+        "SELECT 1 FROM facts WHERE id = ?", (fact_id,)
+    ).fetchone():
+        return M.not_found("fact", id=fact_id)
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE facts SET source_quote = ? WHERE id = ?",
+            (source_quote, fact_id),
+        )
     row = db.connection.execute("SELECT * FROM facts WHERE id = ?", (fact_id,)).fetchone()
     return M.ok(**dict(row))
 
@@ -296,6 +325,15 @@ def register(mcp, db: Database) -> None:
             db, fact_id, fact_text=fact_text, normalized_text=normalized_text,
             source_locator=source_locator, source_quote=source_quote, status=status,
         )
+
+    @mcp.tool()
+    def fact_correct_quote(fact_id: int, source_quote: str) -> dict:
+        """Correct the original source_quote (dedicated ADR-001 §7 operation).
+
+        fact_update refuses to change source_quote; use this tool to fix a
+        wrongly-recorded quote.
+        """
+        return correct_fact_quote(db, fact_id, source_quote=source_quote)
 
     @mcp.tool()
     def fact_categories(fact_id: int) -> dict:

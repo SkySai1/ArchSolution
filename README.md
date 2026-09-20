@@ -49,7 +49,7 @@ uv run architecture-mcp          # транспорт stdio
 | `assessment_facts`      | М:N оценочные факты + отношение                 |
 
 Отношение факта в оценке: `SUPPORTS` / `CONTRADICTS` / `CONTEXT`.
-Результат оценки: `COMPLIANT` / `INCOMPLIANT` / `PARTIAL` / `UNKNOWN` /
+Результат оценки: `COMPLIANT` / `INCOMPLIANT` / `PARTIAL` / `NOT_APPLICABLE` /
 `INSUFFICIENT_DATA`.
 
 ## Инструменты (32 tools)
