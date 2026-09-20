@@ -1,87 +1,137 @@
-# Architecture MCP — инструкция по разработке
+# Architecture MCP — Development Guide
 
-## 1. Функциональные требования
+This file defines the architecture and development rules for `architecture-mcp`.
 
-MCP должен:
+Read it before changing the project.
 
-* работать как локальный MCP-сервер для Goose и использовать SQLite;
-* получать путь к SQLite из конфигурации/переменной окружения;
-* автоматически создавать БД и её схему при первом запуске;
-* хранить источники данных, включая НПА, ТЗ и архитектурные документы;
-* хранить атомарные требования: одна запись = одно требование;
-* хранить атомарные архитектурные факты: одна запись = один проверяемый факт;
-* связывать факты с конкретной архитектурой;
-* использовать единый справочник категорий для требований и фактов;
-* поддерживать M:N-связи:
+## 1. Purpose
 
-  * `requirement ↔ category`;
-  * `fact ↔ category`;
-* позволять агенту получать существующие категории перед классификацией;
-* позволять создавать новую категорию, если после анализа существующих подходящая категория отсутствует;
-* хранить происхождение требований и фактов: источник, положение в источнике и исходную цитату;
-* поддерживать поиск и получение требований, фактов, источников и категорий;
-* позволять создавать оценку соответствия требования конкретной архитектуре;
-* позволять связывать оценку с фактами, которые:
+`architecture-mcp` is a local MCP server for Goose.
 
-  * подтверждают требование;
-  * противоречат ему;
-  * дают дополнительный контекст;
-* поддерживать результат `INSUFFICIENT_DATA`, если данных недостаточно для вывода;
-* предоставлять все операции через предметные MCP tools.
+It stores structured knowledge used to verify software architecture against requirements from NPA, technical specifications, architecture documents, and other sources.
 
----
+The server uses SQLite and exposes only domain-specific MCP tools.
 
-## 2. Нефункциональные требования
+Core capabilities:
 
-* AI-агент не должен иметь прямого доступа к SQLite.
-* AI-агент работает только через MCP tools.
-* Не создавать tool вида `execute_sql()` с произвольной записью в БД.
-* SQL должен находиться внутри модулей MCP и использовать parameterized queries.
-* Составные операции записи должны выполняться транзакционно.
-* MCP не должен загружать всю БД или большие документы в оперативную память.
-* Операции получения списков должны иметь `limit` и при необходимости `offset`.
-* Обработка данных должна преимущественно выполняться потоково или небольшими выборками.
-* Целевая утилизация памяти MCP в обычном режиме — до **128 МБ RSS**.
-* Утилизация более **256 МБ RSS** без выполнения явно большой операции считается архитектурной проблемой и требует устранения.
-* Не использовать ORM, векторные БД, Redis и другие тяжёлые зависимости без отдельной необходимости.
-* Проект должен оставаться небольшим и помещаться вместе с основной документацией в контекст около 48K токенов.
+* store source documents;
+* store atomic requirements;
+* store atomic architecture facts;
+* bind facts to one architecture;
+* classify requirements and facts with one shared category tree;
+* preserve source, locator, and quote;
+* search sources, requirements, facts, and categories;
+* create assessments for a `(requirement, architecture)` pair;
+* attach facts as `SUPPORTS`, `CONTRADICTS`, or `CONTEXT`;
+* return `INSUFFICIENT_DATA` when evidence is insufficient;
+* let the agent inspect existing categories before creating a new one.
+
+One record must represent one requirement or one verifiable fact.
 
 ---
 
-## 3. Структура проекта
+## 2. Hard Rules
+
+1. AI must never access SQLite directly.
+2. AI works only through MCP tools.
+3. Never expose a generic `execute_sql()` tool.
+4. SQL belongs inside domain modules.
+5. Use parameterized SQL only.
+6. Composite writes must be transactional.
+7. List operations must use `limit` and, when useful, `offset`.
+8. Process data in small batches. Do not load the full database or large documents into memory.
+9. Normal memory usage should stay below **128 MB RSS**.
+10. More than **256 MB RSS** without an explicitly large operation is an architecture defect.
+11. Do not add ORM, vector databases, Redis, Kafka, or other heavy dependencies without a real functional need.
+12. Keep source code and core documentation small enough to fit roughly within a 48K-token context.
+
+---
+
+## 3. Architecture
+
+Use:
+
+**Modular Monolith + Composition Root + Explicit Module Registration**
 
 ```text
-src/
-└── architecture_mcp/
-    ├── server.py
-    ├── db.py
-    ├── models.py
-    ├── sources.py
-    ├── requirements.py
-    ├── facts.py
-    ├── categories.py
-    └── assessments.py
+src/architecture_mcp/
+├── server.py
+├── db.py
+├── models.py
+├── sources.py
+├── requirements.py
+├── facts.py
+├── categories.py
+└── assessments.py
 
 tests/
-└── test_mcp.py
-
+adr/
 pyproject.toml
 README.md
 AGENTS.md
 ```
 
+Create a new module only for a real independent responsibility.
+
+Do not split code only to create more layers.
+
+### Runtime flow
+
+```plantuml
+@startuml
+
+actor Goose
+
+participant "server.py\nComposition Root" as Server
+participant "Domain Module\nregister() + functions" as Module
+participant "db.py" as DB
+database SQLite
+
+Goose -> Server : MCP tool call
+Server -> Module : registered handler
+Module -> Module : validation / domain rules
+Module -> DB : data operation
+DB -> SQLite : parameterized SQL
+SQLite --> DB : result
+DB --> Module : structured data
+Module --> Server : structured result
+Server --> Goose : MCP response
+
+@enduml
+```
+
+Dependencies should normally follow:
+
+```text
+domain module
+    ↓
+db.py
+    ↓
+sqlite3
+```
+
+Shared types may come from `models.py`.
+
+Avoid circular or dense cross-imports between domain modules.
+
+---
+
+## 4. Module Responsibilities
+
 ### `server.py`
 
-**Composition Root** приложения.
+Composition Root.
 
-Отвечает только за:
+It may:
 
-* создание MCP-сервера;
-* создание подключения/объекта БД;
-* подключение модулей через их `register()`;
-* запуск MCP.
+* create the MCP server;
+* create the database object;
+* register domain modules;
+* start MCP.
 
-Пример:
+It must not contain SQL or domain logic.
+
+Example:
 
 ```python
 mcp = MCPServer("architecture-mcp")
@@ -94,130 +144,164 @@ categories.register(mcp, db)
 assessments.register(mcp, db)
 ```
 
-В `server.py` не размещать SQL и предметную бизнес-логику.
+Opening `server.py` should make the full application composition clear.
 
 ### `db.py`
 
-Общий инфраструктурный слой SQLite:
+SQLite infrastructure:
 
-* открытие соединения;
-* создание схемы;
-* миграции схемы;
-* транзакции;
-* `PRAGMA`;
-* базовые вспомогательные функции работы с SQLite.
+* connection setup;
+* schema creation;
+* schema migrations;
+* transactions;
+* PRAGMAs;
+* small SQLite helpers.
 
 ### `models.py`
 
-Только общие структуры:
+Shared types only:
 
-* Enum;
-* dataclass/Pydantic-модели при необходимости;
-* общие типы результатов.
+* enums;
+* common result types;
+* small shared models when needed.
 
-Не превращать файл в универсальный склад вспомогательного кода.
+Do not turn it into a generic utility module.
 
 ### `sources.py`
 
-Работа с:
+Owns:
 
-* источниками;
-* НПА;
-* архитектурами;
-* сведениями о происхождении данных.
+* sources;
+* NPA metadata;
+* architectures;
+* source provenance operations.
 
 ### `requirements.py`
 
-Работа с требованиями:
+Owns:
 
-* создание;
-* изменение;
-* получение;
-* поиск;
-* привязка к источнику;
-* предметные MCP tools требований.
+* requirement creation;
+* update;
+* lookup;
+* search;
+* source binding;
+* requirement MCP tools.
 
 ### `facts.py`
 
-Работа с архитектурными фактами:
+Owns:
 
-* создание;
-* изменение;
-* получение;
-* поиск;
-* привязка к архитектуре и источнику;
-* предметные MCP tools фактов.
+* fact creation;
+* update;
+* lookup;
+* search;
+* architecture binding;
+* source binding;
+* fact MCP tools.
 
 ### `categories.py`
 
-Работа с:
+Owns:
 
-* категориями;
-* поиском существующих категорий;
-* созданием новых категорий;
-* назначением категорий требованиям и фактам;
-* иерархией категорий, если она необходима.
+* category lookup;
+* category search;
+* category creation;
+* hierarchy;
+* assignment to requirements and facts.
+
+The agent must inspect existing categories before creating a new one.
 
 ### `assessments.py`
 
-Работа с проверкой соответствия:
+Owns:
 
-* создание assessment;
-* результат проверки;
+* assessment creation;
+* result;
 * rationale;
-* связь requirement ↔ architecture;
-* связь assessment ↔ facts;
+* confidence;
+* requirement ↔ architecture relation;
+* assessment ↔ fact relation;
 * `SUPPORTS / CONTRADICTS / CONTEXT`.
 
 ---
 
-## 4. Диаграмма последовательности
+## 5. Development Style
 
-```plantuml
-@startuml
+Keep domain functions small and explicit.
 
-actor Goose
-participant "server.py
-Composition Root" as Server
-participant "Domain Module
-register() + functions" as Module
-participant "db.py" as DB
-database SQLite
+Prefer:
 
-Goose -> Server : MCP tool call
-Server -> Module : registered handler
-
-Module -> Module : validation / business rules
-Module -> DB : data operation
-
-DB -> SQLite : parameterized SQL
-SQLite --> DB : result
-DB --> Module : structured data
-
-Module --> Server : structured result
-Server --> Goose : MCP response
-
-@enduml
+```python
+create(...)
+get(...)
+update(...)
+search(...)
+assign_category(...)
 ```
+
+Each function must perform one clear domain operation.
+
+Pass dependencies explicitly:
+
+```python
+register(mcp, db)
+create(db, ...)
+```
+
+Avoid global database connections.
+
+Each MCP module exposes:
+
+```python
+def register(mcp, db):
+    ...
+```
+
+MCP tools should be thin wrappers around domain functions.
+
+Prefer:
+
+```text
+MCP tool
+   ↓
+atomic domain function
+   ↓
+db.py / SQLite
+```
+
+Do not add forwarding-only layers such as:
+
+```text
+repository
+service
+manager
+handler
+controller
+factory
+```
+
+unless they solve a real architectural problem.
+
+Every Python file must start with a short module-level docstring.
 
 ---
 
-## 5. Модель данных и связи таблиц
+## 6. Data Model
 
-База данных должна оставаться компактной.
+The database should remain compact.
 
-Основные сущности:
+Core entities:
 
-* `sources` — источники информации;
-* `npa` — дополнительные реквизиты источников типа НПА;
-* `architectures` — анализируемые архитектуры;
-* `requirements` — атомарные требования;
-* `facts` — атомарные архитектурные факты;
-* `categories` — единый справочник категорий;
-* `requirement_categories` — связь требований с категориями;
-* `fact_categories` — связь фактов с категориями;
-* `assessments` — результаты проверки требований относительно архитектуры;
-* `assessment_facts` — факты, использованные в оценке.
+* `sources`;
+* `npa`;
+* `architectures`;
+* `requirements`;
+* `facts`;
+* `categories`;
+* `requirement_categories`;
+* `fact_categories`;
+* `assessments`;
+* `assessment_facts`.
 
 ```plantuml
 @startuml
@@ -232,6 +316,7 @@ entity sources {
     title : TEXT
     version : TEXT
     file_path : TEXT
+    status : TEXT
 }
 
 entity npa {
@@ -317,7 +402,6 @@ entity assessment_facts {
 }
 
 sources ||--o| npa
-
 sources ||--o{ requirements
 sources ||--o{ facts
 
@@ -340,263 +424,266 @@ facts ||--o{ assessment_facts
 @enduml
 ```
 
-### Ключевые правила модели
+### Model invariants
 
-* `sources → requirements` — один источник может содержать множество требований.
-* `sources → facts` — один источник может содержать множество фактов.
-* `sources → npa` — запись `npa` является расширением источника типа НПА.
-* `architectures → facts` — каждый факт относится к конкретной архитектуре.
-* `requirements ↔ categories` — M:N через `requirement_categories`.
-* `facts ↔ categories` — M:N через `fact_categories`.
-* `categories.parent_id` обеспечивает простую иерархию категорий.
-* `assessment` всегда относится одновременно к одному `requirement` и одной `architecture`.
-* `assessment ↔ facts` — M:N через `assessment_facts`.
-* `assessment_facts.relation_type` принимает значения:
+* every requirement has a source;
+* every fact belongs to one architecture;
+* facts preserve source provenance;
+* categories are shared by requirements and facts;
+* category hierarchy uses `parent_id`;
+* join-table pairs must be unique;
+* every assessment belongs to exactly one requirement and one architecture;
+* `assessment_facts.relation_type` is one of:
 
-  * `SUPPORTS`;
-  * `CONTRADICTS`;
-  * `CONTEXT`.
-* составные пары в таблицах связей должны быть уникальными;
-* внешние ключи должны контролироваться SQLite через `PRAGMA foreign_keys = ON`.
+```text
+SUPPORTS
+CONTRADICTS
+CONTEXT
+```
 
-Схема является минимальной моделью первой версии. Новые таблицы не добавлять заранее «на будущее» без появления реальной функциональной необходимости.
+Current assessment results are:
+
+```text
+COMPLIANT
+INCOMPLIANT
+PARTIAL
+UNKNOWN
+INSUFFICIENT_DATA
+```
+
+`PRAGMA foreign_keys = ON` is mandatory.
+
+Do not add tables only for possible future use. Add them only when a functional requirement or accepted ADR requires them.
 
 ---
 
-## 6. Архитектурный стиль разработки
+## 7. SQLite Rules
 
-Использовать архитектурный стиль:
+Use standard-library `sqlite3`.
 
-**Modular Monolith + Composition Root + Explicit Module Registration.**
-
-### Основные правила
-
-Каждая предметная область реализуется отдельным модулем:
+Apply:
 
 ```text
-requirements.py
-facts.py
-categories.py
-...
+foreign_keys = ON
+journal_mode = WAL
+synchronous = NORMAL
+busy_timeout = 5000
 ```
 
-Модуль должен содержать небольшие атомарные функции:
+Use:
 
 ```python
-create(...)
-get(...)
-update(...)
-search(...)
-assign_category(...)
+sqlite3.Row
 ```
 
-Функция должна выполнять одну понятную предметную операцию.
+for dict-friendly access.
 
-### Explicit Module Registration
-
-Каждый MCP-модуль экспортирует:
+All writes must use transactions:
 
 ```python
-def register(mcp, db):
+with db.transaction() as tx:
     ...
 ```
 
-`register()` регистрирует MCP tools данного модуля.
+Commit on success. Roll back on failure.
 
-Например:
-
-```python
-def register(mcp, db):
-
-    @mcp.tool()
-    def requirement_create(...):
-        return create(db, ...)
-```
-
-Все модули подключаются централизованно только через `server.py`.
-
-Таким образом:
+The database path comes from:
 
 ```text
-server.py
-    ↓ register()
-requirements.py
-facts.py
-categories.py
-...
+ARCH_MCP_DB
 ```
 
-Это позволяет открыть `server.py` и сразу увидеть полный состав приложения.
+Use an absolute path and create the parent directory when needed.
 
-### Dependency Injection
+Schema changes must use migrations.
 
-Зависимости передаются явно:
+Existing databases must not require recreation during normal upgrades.
 
-```python
-register(mcp, db)
-```
+Text search in v1 uses `LIKE`.
 
-и:
+Do not add FTS or vector search without an accepted requirement or ADR.
 
-```python
-create(db, ...)
-```
-
-Не использовать глобальные подключения к БД внутри модулей без необходимости.
-
-### Ограничение связности
-
-Предметные модули не должны образовывать сеть взаимных импортов.
-
-Предпочтительная зависимость:
+Default list size:
 
 ```text
-domain module
-     ↓
-   db.py
-     ↓
- SQLite
+50
 ```
 
-Общие типы допускается импортировать из `models.py`.
-
-Если два модуля начинают активно импортировать друг друга — архитектуру следует пересмотреть.
-
-### Минимум абстракций
-
-Не создавать отдельные:
+Maximum:
 
 ```text
-repository
-service
-manager
-handler
-controller
-factory
+500
 ```
 
-если они только передают вызов следующему слою.
+---
 
-Предпочитать:
+## 8. Testing
+
+Use:
 
 ```text
-MCP tool
-   ↓
-atomic domain function
-   ↓
-db.py / SQLite
+pytest
+pytest-asyncio
 ```
 
-### Размер файлов
+Each domain module must test at least:
 
-Предпочитать небольшое количество содержательных файлов.
+* one write;
+* one read;
+* important domain invariants.
 
-Новый файл создаётся только тогда, когда появляется самостоятельная предметная ответственность, а не ради формального разделения слоёв.
+Use a real temporary SQLite database.
 
-### Заголовок каждого файла
+Test MCP registration so expected tools appear through `mcp.list_tools()`.
 
-Каждый Python-файл должен начинаться с короткого **module-level docstring**, объясняющего назначение файла.
+Add a regression test for each bug fix when practical.
 
-Например:
+Before work is complete:
 
-```python
-"""
-MCP tools and domain operations for architecture requirements.
-"""
+```bash
+uv run pytest -q
+uv run ruff check .
 ```
 
-Не писать длинные архитектурные инструкции непосредственно в исходных файлах.
+---
 
-### Git как история действий агента
+## 9. Git Discipline
 
-После каждого логически завершённого изменения агент должен создавать Git commit.
+Use Git as the coding agent's development history.
 
-Принцип:
+One logical change should produce one commit:
 
 ```text
-одно законченное изменение
-        ↓
-проверка
-        ↓
+change
+  ↓
+test
+  ↓
 commit
-        ↓
-следующее изменение
+  ↓
+next change
 ```
 
-Не накапливать большое количество независимых изменений в одном commit.
+Do not combine unrelated work.
 
-Предпочтительные сообщения:
+Prefer conventional commit messages:
 
 ```text
 feat(requirements): add requirement creation
 feat(categories): add category assignment
 fix(db): rollback failed transaction
-refactor(server): simplify module registration
-test(facts): add fact creation tests
-docs: update MCP tool description
+refactor(server): simplify registration
+test(facts): cover fact creation
+docs: update architecture rules
 ```
 
-Перед commit необходимо по возможности:
+Do not force-push or rewrite shared history unless explicitly requested.
 
-```bash
-uv run pytest
-uv run ruff check .
-```
-
-Git history рассматривается как журнал действий coding-агента и должна позволять понять последовательность изменений проекта.
+Keep the working tree clean between completed logical changes.
 
 ---
 
-## Главный принцип
+## 10. ADR Workflow
 
-При выборе между:
-
-```text
-новая архитектурная абстракция
-```
-
-и:
+Architecture decisions are stored in:
 
 ```text
-простая функция в существующем предметном модуле
+adr/
 ```
 
-по умолчанию выбирать второй вариант.
+Before starting work, inspect the beginning of every ADR with `head` and read its `Status`.
 
-Добавлять архитектурный слой следует только тогда, когда существующая структура действительно перестала справляться с задачей.
+Do not read all ADRs in full by default.
 
-## ADR handling
+Read a relevant ADR completely when its status is:
 
-Before starting work, inspect all files in `adr/` using `head` and read their `Status` field. Do not read every ADR in full by default. Read an ADR completely only when its status indicates active or pending implementation and it is relevant to the current task.
+```text
+ACCEPTED
+IN_PROGRESS
+BLOCKED
+```
 
-Supported ADR statuses:
+Read other ADRs fully only when historical context is needed.
 
-* `PROPOSED` — решение предложено, но ещё не принято; do not implement unless explicitly requested.
-* `ACCEPTED` — решение принято и ожидает реализации; read fully when relevant.
-* `IN_PROGRESS` — реализация ADR выполняется; always read fully when relevant.
-* `BLOCKED` — реализация начата, но заблокирована; read fully before related work.
-* `COMPLETED` — ADR полностью реализован; normally only `head` is required unless historical context is needed.
-* `REJECTED` — решение отклонено; do not implement.
-* `SUPERSEDED` — ADR заменён другим ADR; follow the referenced replacement ADR instead.
+### ADR statuses
 
-ADR files must contain a `Status:` field near the beginning of the file so it is visible through `head`.
+`PROPOSED`
+Decision is under discussion. Do not implement unless explicitly requested.
 
-When starting implementation of an `ACCEPTED` ADR, the agent must change its status to:
+`ACCEPTED`
+Decision is approved and waiting for implementation.
+
+`IN_PROGRESS`
+Implementation has started.
+
+`BLOCKED`
+Implementation started but cannot continue because of a dependency, defect, or unresolved decision.
+
+`COMPLETED`
+Implementation and required tests are finished.
+
+`REJECTED`
+Decision was declined. Do not implement.
+
+`SUPERSEDED`
+Another ADR replaced this one. Follow the referenced ADR.
+
+Every ADR must keep its `Status:` near the top so `head` can read it.
+
+When implementation of an `ACCEPTED` ADR starts:
 
 ```text
 Status: IN_PROGRESS
 ```
 
-When all requirements of the ADR are implemented and tests pass, the agent must change its status to:
+When all required implementation and tests are complete:
 
 ```text
 Status: COMPLETED
 ```
 
-If implementation cannot be completed because of an external dependency, unresolved architectural decision, or blocking defect, set:
+If work cannot continue:
 
 ```text
 Status: BLOCKED
 ```
 
-Do not mark an ADR as `COMPLETED` until its required implementation and tests are finished. Status changes must be committed together with the corresponding implementation state.
+Do not mark an ADR `COMPLETED` before its required code and tests are finished.
+
+Commit ADR status changes together with the corresponding implementation state.
+
+---
+
+## 11. Explicit Non-Goals
+
+Do not add these to v1 without a functional requirement or ADR:
+
+* generic `execute_sql()`;
+* authentication or multi-tenant isolation;
+* FTS;
+* embeddings or vector search;
+* full database audit log;
+* category aliases or synonyms;
+* cross-architecture fact comparison;
+* background workers or queues;
+* REST or gRPC API;
+* unnecessary architectural layers.
+
+---
+
+## 12. Default Design Rule
+
+When choosing between:
+
+```text
+new architectural abstraction
+```
+
+and:
+
+```text
+simple function in an existing domain module
+```
+
+choose the simple function by default.
+
+Add a new architectural layer only when the current structure can no longer handle the requirement clearly.
