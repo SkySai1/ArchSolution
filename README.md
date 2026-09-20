@@ -52,9 +52,9 @@ uv run architecture-mcp          # транспорт stdio
 Результат оценки: `COMPLIANT` / `INCOMPLIANT` / `PARTIAL` / `NOT_APPLICABLE` /
 `INSUFFICIENT_DATA`.
 
-## Инструменты (32 tools)
+## Инструменты (35 tools)
 
-### sources.py
+### sources.py (8 tools)
 | Tool | Назначение |
 |---|---|
 | `source_create` | Создать документ-источник (тип: NPA/TD/ARCH/STANDARD/INTERNAL) |
@@ -66,27 +66,29 @@ uv run architecture-mcp          # транспорт stdio
 | `architecture_get` | Получить архитектуру |
 | `architecture_list` | Список архитектур |
 
-### requirements.py
+### requirements.py (7 tools)
 | Tool | Назначение |
 |---|---|
 | `requirement_create` | Создать атомарное требование (из источника) |
 | `requirement_get` | Получить требование |
 | `requirement_list` | Список (фильтр по источнику, limit/offset) |
 | `requirement_search` | Подстроковый поиск (регистронезависимый, включая кириллицу) |
-| `requirement_update` | Частичное обновление |
+| `requirement_update` | Частичное обновление (source_quote запрещён) |
+| `requirement_correct_quote` | **Исправление source_quote** (единственный путь, ADR-001 §7) |
 | `requirement_categories` | Категории требования (читает M:N) |
 
-### facts.py
+### facts.py (7 tools)
 | Tool | Назначение |
 |---|---|
 | `fact_create` | Создать атомарный факт (архитектура + источник) |
 | `fact_get` | Получить факт |
 | `fact_list` | Список (фильтр по арх/источнику) |
-| `fact_search` | Поиск по тексту факта |
-| `fact_update` | Частичное обновление |
+| `fact_search` | Поиск по тексту факта (изолирован по архитектуре, ADR-001 §3) |
+| `fact_update` | Частичное обновление (source_quote запрещён) |
+| `fact_correct_quote` | **Исправление source_quote** (единственный путь, ADR-001 §7) |
 | `fact_categories` | Категории факта (читает M:N) |
 
-### categories.py
+### categories.py (6 tools)
 | Tool | Назначение |
 |---|---|
 | `category_create` | Создать категорию (scope: REQUIREMENT/FACT/BOTH/ASSESSMENT, parent) |
@@ -96,13 +98,14 @@ uv run architecture-mcp          # транспорт stdio
 | `category_assign` | Назначить категорию REQUIREMENT или FACT (upsert, confidence) |
 | `category_unassign` | Снять категорию |
 
-### assessments.py
+### assessments.py (7 tools)
 | Tool | Назначение |
 |---|---|
-| `assessment_create` | Вердикт по (requirement, architecture) + опциональные факты одним транзактом |
+| `assessment_create` | Вердикт по (requirement, architecture) + опциональные факты одним транзактом (только факты этой архитектуры) |
 | `assessment_get` | Получить оценку |
 | `assessment_list` | Список (фильтры requirement/architecture/result) |
-| `assessment_attach_fact` | Привязать факт: SUPPORTS/CONTRADICTS/CONTEXT (upsert) |
+| `assessment_update` | **Повторная оценка**: result/rationale/confidence + атомарная замена evidence (ADR-001 §5) |
+| `assessment_attach_fact` | Привязать факт: SUPPORTS/CONTRADICTS/CONTEXT (upsert, только своя архитектура) |
 | `assessment_detach_fact` | Отвязать факт |
 | `assessment_facts` | Доказательная база оценки |
 
@@ -116,8 +119,17 @@ uv run architecture-mcp          # транспорт stdio
 5. `category_search` → при отсутствии `category_create` →
    `category_assign` для требований и фактов.
 6. `assessment_create` — вердикт по паре
-   (при нехватке данных — `INSUFFICIENT_DATA`), затем
-   `assessment_attach_fact` с отношением SUPPORTS/CONTRADICTS/CONTEXT.
+   (при нехватке данных — `INSUFFICIENT_DATA`; требование рассмотрено,
+   но не применимо — `NOT_APPLICABLE`), затем `assessment_attach_fact`
+   с отношением SUPPORTS/CONTRADICTS/CONTEXT. Факты должны принадлежать
+   той же архитектуре, что и оценка.
+7. При изменении доказательной базы — `assessment_update`: атомарная
+   повторная оценка (result/rationale/confidence + полная замена evidence).
+
+> **Примечание (ADR-001 §7).** `source_quote` фиксирует исходное происхождение
+> и защищён от изменений: `requirement_update` / `fact_update` отказываются его
+> менять. Исправление опечатки/цитаты — только через
+> `requirement_correct_quote` / `fact_correct_quote`.
 
 ## Типы ответов
 
