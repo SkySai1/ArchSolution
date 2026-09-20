@@ -30,6 +30,13 @@ class Database:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        # Unicode case-folding for case-insensitive text search (SQL LIKE only
+        # folds ASCII, so searches over Cyrillic text need an explicit UDF).
+        self._conn.create_function(
+            "ilower", 1,
+            lambda s: s.lower() if isinstance(s, str) else s,
+            deterministic=True,
+        )
         self._apply_pragmas()
 
     # -- connection --------------------------------------------------------------

@@ -133,8 +133,8 @@ def search_requirements(
     needle = f"%{_escape_like(query.strip())}%"
     rows = db.connection.execute(
         "SELECT * FROM requirements "
-        "WHERE requirement_text LIKE ? ESCAPE '\\' "
-        "   OR coalesce(normalized_text, '') LIKE ? ESCAPE '\\' "
+        "WHERE ilower(requirement_text) LIKE ilower(?) ESCAPE '\\' "
+        "   OR ilower(coalesce(normalized_text, '')) LIKE ilower(?) ESCAPE '\\' "
         "ORDER BY id DESC LIMIT ? OFFSET ?",
         (needle, needle, lim, off),
     ).fetchall()

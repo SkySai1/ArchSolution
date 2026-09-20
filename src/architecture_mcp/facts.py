@@ -147,8 +147,8 @@ def search_facts(
     needle = f"%{_escape_like(query.strip())}%"
     sql = (
         "SELECT * FROM facts "
-        "WHERE fact_text LIKE ? ESCAPE '\\' "
-        "   OR coalesce(normalized_text, '') LIKE ? ESCAPE '\\'"
+        "WHERE ilower(fact_text) LIKE ilower(?) ESCAPE '\\' "
+        "   OR ilower(coalesce(normalized_text, '')) LIKE ilower(?) ESCAPE '\\'"
     )
     args: list[object] = [needle, needle]
     if architecture_id is not None:
