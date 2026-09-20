@@ -18,12 +18,14 @@ def test_npa_status_members() -> None:
     }
 
 
-def test_assessment_result_includes_insufficient_data() -> None:
+def test_assessment_result_members() -> None:
+    """ADR-001 §6: NOT_APPLICABLE added, UNKNOWN removed."""
     values = {k.value for k in M.AssessmentResult}
-    assert "INSUFFICIENT_DATA" in values
     assert values == {
-        "COMPLIANT", "INCOMPLIANT", "PARTIAL", "UNKNOWN", "INSUFFICIENT_DATA",
+        "COMPLIANT", "INCOMPLIANT", "PARTIAL",
+        "NOT_APPLICABLE", "INSUFFICIENT_DATA",
     }
+    assert "UNKNOWN" not in values
 
 
 def test_relation_type_members() -> None:

@@ -64,6 +64,22 @@ def test_create_insufficient_data(db, seed) -> None:
     assert r["result"] == "INSUFFICIENT_DATA"
 
 
+def test_not_applicable_accepted(db, seed) -> None:
+    """ADR-001 §6.2/§9.6: NOT_APPLICABLE is a first-class result meaning
+    the requirement was considered but does not apply to this architecture."""
+    arch2 = S.create_architecture(db, name="Применение вне темы", version="1.0")["id"]
+    r = A.create_assessment(
+        db, requirement_id=seed["rid"], architecture_id=arch2,
+        result="NOT_APPLICABLE",
+        rationale="архитектура не содержит удалённого доступа — требование MFA неприменимо",
+    )
+    assert r["ok"] is True, r
+    assert r["result"] == "NOT_APPLICABLE"
+    listed = A.list_assessments(db, architecture_id=arch2, result="NOT_APPLICABLE")
+    assert listed["ok"] is True
+    assert len(listed["items"]) == 1
+
+
 def test_duplicate_pair_is_conflict(db, seed) -> None:
     args = dict(requirement_id=seed["rid"], architecture_id=seed["arch"],
                 rationale="r")

@@ -86,12 +86,17 @@ class CategoryStatus(str, enum.Enum):
 # Assessments
 # ---------------------------------------------------------------------------
 class AssessmentResult(str, enum.Enum):
-    """Compliance verdict of a single (requirement, architecture) pair."""
+    """Compliance verdict of a single (requirement, architecture) pair.
+
+    ADR-001 §6: `UNKNOWN` removed — it was used as a synonym of
+    `INSUFFICIENT_DATA`. `NOT_APPLICABLE` is the explicit "requirement
+    was considered but does not apply to this architecture" state.
+    """
 
     COMPLIANT = "COMPLIANT"
     INCOMPLIANT = "INCOMPLIANT"
     PARTIAL = "PARTIAL"
-    UNKNOWN = "UNKNOWN"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
     INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
 
 

@@ -261,7 +261,7 @@ def register(mcp, db: Database) -> None:
 
         `facts` optionally lists initial evidence:
         [{"fact_id": 1, "relation_type": "SUPPORTS" | "CONTRADICTS" | "CONTEXT"}].
-        Result must be one of COMPLIANT/INCOMPLIANT/PARTIAL/UNKNOWN/INSUFFICIENT_DATA.
+        Result must be one of COMPLIANT/INCOMPLIANT/PARTIAL/NOT_APPLICABLE/INSUFFICIENT_DATA.
         """
         return create_assessment(
             db, requirement_id=requirement_id, architecture_id=architecture_id,
