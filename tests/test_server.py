@@ -22,6 +22,7 @@ ALL_EXPECTED_TOOLS = {
     "category_search", "category_assign", "category_unassign",
     # assessments.py
     "assessment_create", "assessment_get", "assessment_list",
+    "assessment_update",
     "assessment_attach_fact", "assessment_detach_fact", "assessment_facts",
 }
 

@@ -15,6 +15,7 @@ _TOOL_NAMES = {
     "assessment_create",
     "assessment_get",
     "assessment_list",
+    "assessment_update",
     "assessment_attach_fact",
     "assessment_detach_fact",
     "assessment_facts",
@@ -166,6 +167,96 @@ def test_attach_fact_rejects_foreign_architecture(db, seed) -> None:
     ev = A.assessment_evidence(db, aid)["items"]
     assert len(ev) == 1 and ev[0]["fact_id"] == seed["f1"]
     assert ev[0]["relation_type"] == "SUPPORTS"
+
+
+def test_update_reassessment_fields(db, seed) -> None:
+    """ADR-001 §5/§9.4: reassess changes result/rationale/confidence atomically."""
+    aid = A.create_assessment(
+        db, requirement_id=seed["rid"], architecture_id=seed["arch"],
+        result="INSUFFICIENT_DATA", rationale="пока мало фактов",
+        confidence=0.3,
+    )["id"]
+    r = A.update_assessment(
+        db, assessment_id=aid,
+        result="COMPLIANT", rationale="новое подтверждение", confidence=0.9,
+    )
+    assert r["ok"] is True, r
+    got = A.get_assessment(db, aid)
+    assert got["result"] == "COMPLIANT"
+    assert got["rationale"] == "новое подтверждение"
+    assert abs(got["confidence"] - 0.9) < 1e-9
+    # Pair scope unchanged
+    assert got["requirement_id"] == seed["rid"]
+    assert got["architecture_id"] == seed["arch"]
+
+
+def test_update_replaces_evidence_atomically(db, seed) -> None:
+    """ADR-001 §5/§9.5: providing `facts` replaces the whole evidence set
+    atomically; a bad fact rolls back the entire update."""
+    aid = A.create_assessment(
+        db, requirement_id=seed["rid"], architecture_id=seed["arch"],
+        result="PARTIAL", rationale="partly",
+        facts=[
+            {"fact_id": seed["f1"], "relation_type": "SUPPORTS"},
+            {"fact_id": seed["f2"], "relation_type": "CONTEXT"},
+        ],
+    )["id"]
+    assert len(A.assessment_evidence(db, aid)["items"]) == 2
+
+    # Replace with a single CONTRADICTS fact.
+    r = A.update_assessment(
+        db, assessment_id=aid,
+        result="INCOMPLIANT", rationale="теперь противоречие",
+        facts=[{"fact_id": seed["f1"], "relation_type": "CONTRADICTS"}],
+    )
+    assert r["ok"] is True, r
+    ev = A.assessment_evidence(db, aid)["items"]
+    assert len(ev) == 1
+    assert ev[0]["fact_id"] == seed["f1"]
+    assert ev[0]["relation_type"] == "CONTRADICTS"
+    got = A.get_assessment(db, aid)
+    assert got["result"] == "INCOMPLIANT"
+
+    # Empty list clears evidence.
+    assert A.update_assessment(db, assessment_id=aid, facts=[])["ok"] is True
+    assert A.assessment_evidence(db, aid)["items"] == []
+
+
+def test_update_rejection_is_atomically_rolled_back(db, seed) -> None:
+    """ADR-001 §5.4: a bad evidence fact must roll back the whole update,
+    leaving prior result AND prior evidence untouched."""
+    aid = A.create_assessment(
+        db, requirement_id=seed["rid"], architecture_id=seed["arch"],
+        result="COMPLIANT", rationale="ok",
+        facts=[{"fact_id": seed["f1"], "relation_type": "SUPPORTS"}],
+    )["id"]
+
+    arch2 = S.create_architecture(db, name="Чужая арк 3", version="1.0")["id"]
+    foreign = F.create_fact(
+        db, architecture_id=arch2, source_id=seed["src"], fact_text="чужой"
+    )["id"]
+    # Mixed payload: valid field change + a foreign fact -> must all roll back.
+    r = A.update_assessment(
+        db, assessment_id=aid,
+        result="INCOMPLIANT", rationale="must not land",
+        facts=[{"fact_id": foreign, "relation_type": "SUPPORTS"}],
+    )
+    assert r["ok"] is False and r["code"] == "BAD_REQUEST", r
+    # Prior state fully preserved (both verdict and evidence).
+    got = A.get_assessment(db, aid)
+    assert got["result"] == "COMPLIANT"
+    assert got["rationale"] == "ok"
+    ev = A.assessment_evidence(db, aid)["items"]
+    assert len(ev) == 1 and ev[0]["fact_id"] == seed["f1"]
+
+    # Bad relation_type / no fields also rejected cleanly.
+    assert A.update_assessment(
+        db, assessment_id=aid,
+        facts=[{"fact_id": seed["f1"], "relation_type": "NOPE"}],
+    )["code"] == "BAD_REQUEST"
+    assert A.update_assessment(db, assessment_id=aid)["code"] == "BAD_REQUEST"
+    assert A.update_assessment(db, assessment_id=999, result="COMPLIANT")[
+        "code"] == "NOT_FOUND"
 
 
 def test_attach_detach_fact(db, seed) -> None:

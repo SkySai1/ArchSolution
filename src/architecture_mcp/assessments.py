@@ -258,6 +258,107 @@ def detach_fact(db: Database, *, assessment_id: int, fact_id: int) -> dict:
     return M.ok(deleted=True)
 
 
+def update_assessment(
+    db: Database,
+    *,
+    assessment_id: int,
+    result: str | None = None,
+    rationale: str | None = None,
+    confidence: float | None = None,
+    facts: list[dict] | None = None,
+) -> dict:
+    """Re-assess an existing assessment (ADR-001 §5).
+
+    - ``result``, ``rationale``, ``confidence`` are updated when provided.
+    - ``facts`` (optional): if a list is supplied it **replaces** the whole
+      evidence set in a single transaction; if omitted, evidence is untouched.
+    - The pair (requirement_id, architecture_id) is immutable here — to
+      change the scope you create a new assessment for that pair.
+
+    All changes are applied atomically: either the whole update lands or
+    nothing does.
+    """
+    # --- validate up-front ---------------------------------------------------
+    existing = db.connection.execute(
+        "SELECT architecture_id FROM assessments WHERE id = ?", (assessment_id,)
+    ).fetchone()
+    if existing is None:
+        return M.not_found("assessment", id=assessment_id)
+    arch_id = existing["architecture_id"]
+
+    if result is not None:
+        try:
+            _one_of(result, {k.value for k in M.AssessmentResult}, "result")
+        except ValueError as exc:
+            return M.bad_request(str(exc))
+    if rationale is not None:
+        try:
+            _non_empty(rationale, "rationale")
+        except ValueError as exc:
+            return M.bad_request(str(exc))
+    if confidence is not None:
+        try:
+            _confidence(confidence)
+        except ValueError as exc:
+            return M.bad_request(str(exc))
+
+    if facts is not None:
+        for item in facts:
+            if item.get("relation_type") not in {k.value for k in M.RelationType}:
+                return M.bad_request(
+                    f"bad relation_type {item.get('relation_type')!r}; "
+                    f"expected one of {[k.value for k in M.RelationType]}"
+                )
+            err = _require_evidence_architecture(db, arch_id, item.get("fact_id"))
+            if err is not None:
+                return err
+
+    if result is None and rationale is None and confidence is None and facts is None:
+        return M.bad_request("no fields to update")
+
+    # --- atomic write ---------------------------------------------------------
+    try:
+        with db.transaction() as conn:
+            sets: list[str] = []
+            vals: list[object] = []
+            if result is not None:
+                sets.append("result = ?")
+                vals.append(result)
+            if rationale is not None:
+                sets.append("rationale = ?")
+                vals.append(rationale)
+            if confidence is not None:
+                sets.append("confidence = ?")
+                vals.append(confidence)
+            if sets:
+                vals.append(assessment_id)
+                conn.execute(f"UPDATE assessments SET {', '.join(sets)} WHERE id = ?", vals)
+
+            if facts is not None:
+                conn.execute(
+                    "DELETE FROM assessment_facts WHERE assessment_id = ?",
+                    (assessment_id,),
+                )
+                for item in facts:
+                    conn.execute(
+                        "INSERT INTO assessment_facts (assessment_id, fact_id, relation_type) "
+                        "VALUES (?, ?, ?)",
+                        (assessment_id, item["fact_id"], item["relation_type"]),
+                    )
+    except sqlite3.IntegrityError as exc:
+        msg = str(exc)
+        if "UNIQUE" in msg:
+            return M.conflict("evidence fact already attached")
+        if "FOREIGN KEY" in msg:
+            return M.not_found("fact", id=None)
+        return M.conflict(msg)
+
+    row = db.connection.execute(
+        "SELECT * FROM assessments WHERE id = ?", (assessment_id,)
+    ).fetchone()
+    return M.ok(**dict(row))
+
+
 def assessment_evidence(db: Database, assessment_id: int) -> dict:
     """List the evidence facts of an assessment, grouped by relation type."""
     if not db.connection.execute(
@@ -339,6 +440,27 @@ def register(mcp, db: Database) -> None:
     def assessment_detach_fact(assessment_id: int, fact_id: int) -> dict:
         """Remove a fact from the evidence of an assessment."""
         return detach_fact(db, assessment_id=assessment_id, fact_id=fact_id)
+
+    @mcp.tool()
+    def assessment_update(
+        assessment_id: int,
+        result: str | None = None,
+        rationale: str | None = None,
+        confidence: float | None = None,
+        facts: list[dict] | None = None,
+    ) -> dict:
+        """Re-assess an existing assessment (ADR-001 §5).
+
+        Update result / rationale / confidence when provided. If `facts` is
+        provided, it REPLACES the whole evidence set atomically:
+        [{"fact_id": 1, "relation_type": "SUPPORTS" | "CONTRADICTS" | "CONTEXT"}].
+        Facts must belong to the assessment's architecture. If no field is
+        provided, the call is rejected.
+        """
+        return update_assessment(
+            db, assessment_id=assessment_id, result=result,
+            rationale=rationale, confidence=confidence, facts=facts,
+        )
 
     @mcp.tool()
     def assessment_facts(assessment_id: int) -> dict:
